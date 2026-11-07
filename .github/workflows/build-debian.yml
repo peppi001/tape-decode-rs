@@ -1,62 +1,69 @@
-
-name: Build Debian Linux
+name: Build Debian 12
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - master
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build-debian:
-    name: Debian 12 x86-64
+  debian-x86-64:
+    name: Debian 12 x86-64 (v1-v4 + alderlake)
     runs-on: ubuntu-24.04
-
     container:
       image: debian:bookworm
 
     steps:
-      - name: Install system dependencies
+      - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends \
-            ca-certificates curl git build-essential \
-            pkg-config libssl-dev tar gzip
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust nightly
-        run: |
-          curl --proto '=https' --tlsv1.2 \
-            -sSf https://sh.rustup.rs \
-            | sh -s -- -y --profile minimal \
-              --default-toolchain nightly
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential binutils ca-certificates curl git \
+            libssl-dev pkg-config tar xz-utils
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain nightly
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      - name: Build release binary
-        env:
-          RUSTFLAGS: "-C target-cpu=x86-64"
-        run: |
-          cargo build --locked --release \
-            -p tape-decode-cli
+      - name: Checkout
+        uses: actions/checkout@v6
 
-      - name: Verify binary
+      - name: Build all microarchitecture levels
+        shell: bash
         run: |
-          ./target/release/tape-decode --help
-          ./target/release/tape-decode list-profiles
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          declare -A levels=(
+            ["x86-64-v1"]="x86-64"
+            ["x86-64-v2"]="x86-64-v2"
+            ["x86-64-v3"]="x86-64-v3"
+            ["x86-64-v4"]="x86-64-v4"
+            ["alderlake"]="alderlake"
+          )
+          mkdir -p dist
+          for name in x86-64-v1 x86-64-v2 x86-64-v3 x86-64-v4 alderlake; do
+            cpu="${levels[$name]}"
+            echo "Building $name (target-cpu=$cpu)"
+            RUSTFLAGS="-C target-cpu=$cpu" CARGO_TARGET_DIR="target-$name" \
+              cargo build --locked --release --target x86_64-unknown-linux-gnu --bin tape-decode
+            mkdir -p "dist/$name"
+            cp "target-$name/x86_64-unknown-linux-gnu/release/tape-decode" "dist/$name/tape-decode"
+            objcopy --only-keep-debug "dist/$name/tape-decode" "dist/$name/tape-decode.debug"
+            strip --strip-debug --strip-unneeded "dist/$name/tape-decode"
+            objcopy --add-gnu-debuglink="dist/$name/tape-decode.debug" "dist/$name/tape-decode"
+          done
 
-      - name: Package binary
+      - name: Package debian12.tar.xz
+        shell: bash
         run: |
-          tar -czf tape-decode-debian12-x86_64.tar.gz \
-            -C target/release tape-decode
+          set -euo pipefail
+          tar -cJf debian12.tar.xz -C dist .
 
-      - name: Upload Debian artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload debian12.tar.xz
+        uses: actions/upload-artifact@v7
         with:
-          name: tape-decode-debian12-x86_64
-          path: tape-decode-debian12-x86_64.tar.gz
-          retention-days: 30
+          name: debian12
+          path: debian12.tar.xz
+          if-no-files-found: error
