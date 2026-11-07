@@ -1,0 +1,62 @@
+
+name: Build Debian Linux
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build-debian:
+    name: Debian 12 x86-64
+    runs-on: ubuntu-24.04
+
+    container:
+      image: debian:bookworm
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential \
+            pkg-config libssl-dev tar gzip
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        run: |
+          curl --proto '=https' --tlsv1.2 \
+            -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal \
+              --default-toolchain nightly
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Build release binary
+        env:
+          RUSTFLAGS: "-C target-cpu=x86-64"
+        run: |
+          cargo build --locked --release \
+            -p tape-decode-cli
+
+      - name: Verify binary
+        run: |
+          ./target/release/tape-decode --help
+          ./target/release/tape-decode list-profiles
+
+      - name: Package binary
+        run: |
+          tar -czf tape-decode-debian12-x86_64.tar.gz \
+            -C target/release tape-decode
+
+      - name: Upload Debian artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tape-decode-debian12-x86_64
+          path: tape-decode-debian12-x86_64.tar.gz
+          retention-days: 30
