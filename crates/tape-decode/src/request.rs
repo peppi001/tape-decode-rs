@@ -338,6 +338,9 @@ pub struct DecodeRequest {
     pub rf_secam_carrier_servo: bool,
     /// Conversion LO trim in Hz the ME-SECAM servo average starts from.
     pub secam_lo_trim: Option<f64>,
+    /// Reproduce the pre-July-17 vhs-decode chroma AGC using per-line burst RMS.
+    #[serde(default)]
+    pub legacy_chroma_agc: bool,
     /// Chroma transient improvement mix; 0 disables it.
     pub cti_mix: f32,
     /// Chroma transient improvement width in subcarrier cycles.
