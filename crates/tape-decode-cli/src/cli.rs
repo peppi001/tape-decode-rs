@@ -238,6 +238,10 @@ struct DecodeArgs {
     /// Seed the SECAM chroma conversion LO trim in Hz (e.g. a converged servo value from a previous run) so it applies from the first field; with --secam-servo-passes 0 it is a fixed trim (ME-SECAM only).
     #[arg(long, value_name = "HZ", allow_negative_numbers = true)]
     secam_lo_trim: Option<f64>,
+    /// Use the pre-July-17 vhs-decode per-line burst-RMS chroma AGC.
+    /// Also disables CTI to approximate that decoder version.
+    #[arg(long)]
+    legacy_chroma_agc: bool,
     /// Chroma transient improvement mix (color-under only); 0 disables it.
     #[arg(long, default_value_t = 1.0)]
     cti_mix: f32,
@@ -440,6 +444,7 @@ fn run_decode(cli: DecodeArgs) -> Result<()> {
         rf_disable_phase_correction: cli.disable_phase_correction,
         rf_secam_carrier_servo: cli.secam_servo_passes >= 1,
         secam_lo_trim: cli.secam_lo_trim,
+        legacy_chroma_agc: cli.legacy_chroma_agc,
         cti_mix: cli.cti_mix,
         cti_width: cli.cti_width,
 
