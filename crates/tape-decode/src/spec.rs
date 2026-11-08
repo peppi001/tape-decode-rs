@@ -159,6 +159,7 @@ pub struct DecoderSpec {
     pub(crate) rf_disable_phase_correction: bool,
     pub(crate) rf_secam_carrier_servo: bool,
     pub(crate) secam_lo_trim: Option<f64>,
+    pub(crate) legacy_chroma_agc: bool,
     pub(crate) cti_mix: f32,
     pub(crate) cti_width: u32,
 
@@ -379,7 +380,7 @@ impl DecoderSpec {
         // The chroma transient improvement reads a sample and its predecessor
         // as a quadrature pair of the subcarrier, which SECAM's FM chroma is
         // not: pulling its samples about distorts the carrier frequency.
-        let cti_mix = if rf_color_system == ColorSystem::Secam {
+        let cti_mix = if rf_color_system == ColorSystem::Secam || request.legacy_chroma_agc {
             0.0
         } else {
             request.cti_mix
@@ -878,6 +879,7 @@ impl DecoderSpec {
             rf_disable_phase_correction: request.rf_disable_phase_correction,
             rf_secam_carrier_servo,
             secam_lo_trim: request.secam_lo_trim,
+            legacy_chroma_agc: request.legacy_chroma_agc,
             cti_mix,
             cti_width: request.cti_width,
 
