@@ -129,6 +129,7 @@ fn chroma_legacy_rms_gain(
     burst_abs_ref: f32,
     line_len: usize,
     burst_area: (usize, usize),
+    first_output_line: usize,
     burst_start_line: i64,
 ) {
     assert!(line_len > 0, "chroma line length must be nonzero");
@@ -140,7 +141,7 @@ fn chroma_legacy_rms_gain(
 
     // The original vhs-decode acc() skips the first 16 output lines.
     for (line_number, line) in chroma.chunks_exact_mut(line_len).enumerate() {
-        if line_number < 16 || line_number as i64 < burst_start_line {
+        if line_number < 16 || (first_output_line + line_number) as i64 < burst_start_line {
             line.fill(0.0);
             continue;
         }
@@ -519,6 +520,7 @@ fn process_chroma_internal(
             burst_abs_ref,
             field.outlinelen,
             spec.burst_area,
+            field.output_lines().start,
             burst_start_line,
         );
         0.0
@@ -671,7 +673,7 @@ mod legacy_chroma_agc_tests {
         chroma[17 * LINE_LEN + 1..17 * LINE_LEN + 5]
             .copy_from_slice(&[6.0, 8.0, 6.0, 8.0]);
 
-        chroma_legacy_rms_gain(&mut chroma, 10.0, LINE_LEN, (1, 5), 0);
+        chroma_legacy_rms_gain(&mut chroma, 10.0, LINE_LEN, (1, 5), 1, 0);
 
         assert!(chroma[..16 * LINE_LEN].iter().all(|&sample| sample == 0.0));
         let rms = 12.5f32.sqrt();
@@ -686,7 +688,7 @@ mod legacy_chroma_agc_tests {
         const LINE_LEN: usize = 8;
         let mut chroma = vec![2.0f32; LINE_LEN * 18];
 
-        chroma_legacy_rms_gain(&mut chroma, 10.0, LINE_LEN, (1, 5), 17);
+        chroma_legacy_rms_gain(&mut chroma, 10.0, LINE_LEN, (1, 5), 1, 18);
 
         assert!(chroma[..17 * LINE_LEN].iter().all(|&sample| sample == 0.0));
         assert!(chroma[17 * LINE_LEN..]
