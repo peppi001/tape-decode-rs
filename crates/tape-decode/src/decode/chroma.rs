@@ -120,6 +120,51 @@ fn chroma_automatic_gain(
     }
 }
 
+/// Reproduce the pre-2026-07-17 vhs-decode chroma gain method.
+/// Normalize the RMS of each line's post-filter, post-comb burst to the
+/// configured reference level. Unlike the modern burst-fit AGC, this has
+/// no per-line gain interpolation, MAD cap, or neighboring-line smoothing.
+fn chroma_legacy_rms_gain(
+    chroma: &mut [f32],
+    burst_abs_ref: f32,
+    line_len: usize,
+    burst_area: (usize, usize),
+    burst_start_line: i64,
+) {
+    assert!(line_len > 0, "chroma line length must be nonzero");
+    let (burst_start, burst_end) = burst_area;
+    assert!(
+        burst_start < burst_end && burst_end <= line_len,
+        "invalid chroma burst window"
+    );
+
+    // The original vhs-decode acc() skips the first 16 output lines.
+    for (line_number, line) in chroma.chunks_exact_mut(line_len).enumerate() {
+        if line_number < 16 || line_number as i64 < burst_start_line {
+            line.fill(0.0);
+            continue;
+        }
+        let burst = &line[burst_start..burst_end];
+        let mean_square = burst
+            .iter()
+            .map(|&sample| {
+                let sample = f64::from(sample);
+                sample * sample
+            })
+            .sum::<f64>()
+            / burst.len() as f64;
+        let burst_rms = mean_square.sqrt() as f32;
+        let gain = if burst_rms != 0.0 {
+            burst_abs_ref / burst_rms
+        } else {
+            1.0
+        };
+        for sample in line {
+            *sample *= gain;
+        }
+    }
+}
+
 /// Chroma transient improvement: steepens the color transitions the
 /// color-under band limit smeared, without disturbing the hue. Each sample
 /// forms an (I, Q) pair with its predecessor, compared with the pairs
@@ -468,14 +513,25 @@ fn process_chroma_internal(
         .sys_burst_abs_ref
         .expect("chroma output without burst_abs_ref");
     let sync_tip_len = usectooutpx(spec, spec.sys_hsync_pulse_us).floor() as usize;
-    let noise_floor = chroma_automatic_gain(
-        &mut uphet,
-        burst_abs_ref,
-        field,
-        phase_sequence,
-        burst_start_line,
-        sync_tip_len,
-    );
+    let noise_floor = if spec.legacy_chroma_agc {
+        chroma_legacy_rms_gain(
+            &mut uphet,
+            burst_abs_ref,
+            field.outlinelen,
+            spec.burst_area,
+            burst_start_line,
+        );
+        0.0
+    } else {
+        chroma_automatic_gain(
+            &mut uphet,
+            burst_abs_ref,
+            field,
+            phase_sequence,
+            burst_start_line,
+            sync_tip_len,
+        )
+    };
 
     tracing::debug!(noise_floor, "chroma noise floor");
 
@@ -600,4 +656,41 @@ fn secam_under_carrier_offset(
         return None;
     }
     Some(f64::from((low_carrier + high_carrier) / 2.0 - pair_center))
+}
+
+#[cfg(test)]
+mod legacy_chroma_agc_tests {
+    use super::chroma_legacy_rms_gain;
+
+    #[test]
+    fn normalizes_each_line_using_its_burst_rms() {
+        const LINE_LEN: usize = 8;
+        let mut chroma = vec![1.0f32; LINE_LEN * 18];
+        chroma[16 * LINE_LEN + 1..16 * LINE_LEN + 5]
+            .copy_from_slice(&[3.0, 4.0, 3.0, 4.0]);
+        chroma[17 * LINE_LEN + 1..17 * LINE_LEN + 5]
+            .copy_from_slice(&[6.0, 8.0, 6.0, 8.0]);
+
+        chroma_legacy_rms_gain(&mut chroma, 10.0, LINE_LEN, (1, 5), 0);
+
+        assert!(chroma[..16 * LINE_LEN].iter().all(|&sample| sample == 0.0));
+        let rms = 12.5f32.sqrt();
+        let first = chroma[16 * LINE_LEN + 1];
+        let second = chroma[17 * LINE_LEN + 1];
+        assert!((first - 3.0 * 10.0 / rms).abs() < 1e-4);
+        assert!((second - 6.0 * 10.0 / (2.0 * rms)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn blanks_lines_before_color_burst_detection() {
+        const LINE_LEN: usize = 8;
+        let mut chroma = vec![2.0f32; LINE_LEN * 18];
+
+        chroma_legacy_rms_gain(&mut chroma, 10.0, LINE_LEN, (1, 5), 17);
+
+        assert!(chroma[..17 * LINE_LEN].iter().all(|&sample| sample == 0.0));
+        assert!(chroma[17 * LINE_LEN..]
+            .iter()
+            .all(|&sample| (sample - 10.0).abs() < 1e-4));
+    }
 }
