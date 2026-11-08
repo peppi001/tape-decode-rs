@@ -141,7 +141,7 @@ fn chroma_legacy_rms_gain(
 
     // The original vhs-decode acc() skips the first 16 output lines.
     for (line_number, line) in chroma.chunks_exact_mut(line_len).enumerate() {
-        if line_number < 16 || (first_output_line + line_number) as i64 < burst_start_line {
+        if line_number < 16 || ((first_output_line + line_number) as i64) < burst_start_line {
             line.fill(0.0);
             continue;
         }
