@@ -1,0 +1,162 @@
+name: Monthly legacy chroma AGC sync
+
+on:
+  schedule:
+    # First day of every month at 04:17 UTC.
+    - cron: '17 4 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monthly-legacy-chroma-agc-sync
+  cancel-in-progress: false
+
+env:
+  LEGACY_BRANCH: feature/pal-legacy-chroma-agc-20261108
+  UPSTREAM_URL: https://github.com/namazso/tape-decode-rs.git
+
+jobs:
+  check-upstream:
+    name: Check upstream for changes
+    runs-on: ubuntu-24.04
+    outputs:
+      update_needed: ${{ steps.check.outputs.update_needed }}
+      upstream_sha: ${{ steps.check.outputs.upstream_sha }}
+      legacy_sha: ${{ steps.check.outputs.legacy_sha }}
+    steps:
+      - name: Check out the legacy branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/pal-legacy-chroma-agc-20261108
+          fetch-depth: 0
+
+      - name: Check upstream master
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream master
+          echo "legacy_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$(git rev-parse upstream/master)" >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo "update_needed=false" >> "$GITHUB_OUTPUT"
+            echo "The legacy branch already contains the latest upstream master."
+          else
+            echo "update_needed=true" >> "$GITHUB_OUTPUT"
+            echo "New upstream commits found. Validating the merge on Linux and Windows."
+          fi
+
+  validate:
+    name: Validate merge on ${{ matrix.os }}
+    needs: check-upstream
+    if: needs.check-upstream.outputs.update_needed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out the legacy branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/pal-legacy-chroma-agc-20261108
+          fetch-depth: 0
+
+      - name: Install the upstream Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install nightly --profile minimal
+          rustup default nightly
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Merge upstream in a temporary checkout
+        shell: bash
+        env:
+          EXPECTED_LEGACY_SHA: ${{ needs.check-upstream.outputs.legacy_sha }}
+          EXPECTED_UPSTREAM_SHA: ${{ needs.check-upstream.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_LEGACY_SHA"
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream master
+          test "$(git rev-parse upstream/master)" = "$EXPECTED_UPSTREAM_SHA"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge --no-ff --no-edit upstream/master
+
+      - name: Run Rust workspace tests
+        shell: bash
+        run: cargo test --workspace --locked
+
+      - name: Build release binary
+        shell: bash
+        run: cargo build --locked --release --bin tape-decode
+
+      - name: Verify the legacy chroma option is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            target/release/tape-decode.exe decode --help | grep -- '--legacy-chroma-agc'
+          else
+            target/release/tape-decode decode --help | grep -- '--legacy-chroma-agc'
+          fi
+
+      - name: Upload Linux binary
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tape-decode-legacy-linux-x86_64
+          path: target/release/tape-decode
+          if-no-files-found: error
+
+      - name: Upload Windows binary
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tape-decode-legacy-windows-x86_64
+          path: target/release/tape-decode.exe
+          if-no-files-found: error
+
+  publish:
+    name: Update the legacy branch after successful validation
+    needs: [check-upstream, validate]
+    if: needs.check-upstream.outputs.update_needed == 'true' && needs.validate.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the legacy branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/pal-legacy-chroma-agc-20261108
+          fetch-depth: 0
+
+      - name: Merge validated upstream and push the legacy branch
+        shell: bash
+        env:
+          EXPECTED_LEGACY_SHA: ${{ needs.check-upstream.outputs.legacy_sha }}
+          EXPECTED_UPSTREAM_SHA: ${{ needs.check-upstream.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          # Reject a concurrent edit to the legacy branch.
+          test "$(git rev-parse HEAD)" = "$EXPECTED_LEGACY_SHA"
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream master
+          # Do not publish an upstream version different from the tested one.
+          test "$(git rev-parse upstream/master)" = "$EXPECTED_UPSTREAM_SHA"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge --no-ff --no-edit upstream/master
+          # A normal push fails rather than overwriting newer remote commits.
+          git push origin "HEAD:refs/heads/$LEGACY_BRANCH"
+          echo "Updated $LEGACY_BRANCH successfully."
